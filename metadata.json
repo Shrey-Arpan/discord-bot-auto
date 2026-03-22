@@ -1,0 +1,5 @@
+{
+  "name": "Discord Message Scheduler Bot",
+  "description": "A Discord bot for scheduling messages and reminders with a persistent Firestore backend.",
+  "requestFramePermissions": []
+}
