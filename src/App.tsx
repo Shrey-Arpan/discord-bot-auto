@@ -20,28 +20,33 @@ import { format } from 'date-fns';
 interface ScheduledMessage {
   id: string;
   userId: string;
+  username: string;
   channelId: string;
   message: string;
   scheduledTime: string;
   createdAt: string;
   status: 'pending' | 'sent' | 'cancelled';
+  category: string;
 }
 
 export default function App() {
   const [messages, setMessages] = useState<ScheduledMessage[]>([]);
+  const [koyaMessages, setKoyaMessages] = useState<ScheduledMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'sent' | 'cancelled'>('all');
+  const [view, setView] = useState<'user' | 'koya'>('user');
 
   const fetchMessages = async () => {
     try {
       const response = await fetch('/api/messages');
       if (response.ok) {
         const data = await response.json();
-        // Sort by scheduled time descending
-        const sorted = data.sort((a: ScheduledMessage, b: ScheduledMessage) => 
-          new Date(b.scheduledTime).getTime() - new Date(a.scheduledTime).getTime()
-        );
-        setMessages(sorted);
+        
+        const sortFn = (a: ScheduledMessage, b: ScheduledMessage) => 
+          new Date(b.scheduledTime).getTime() - new Date(a.scheduledTime).getTime();
+
+        setMessages((data.user_messages || []).sort(sortFn));
+        setKoyaMessages((data.koya_messages || []).sort(sortFn));
       }
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -57,13 +62,14 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const filteredMessages = messages.filter(m => activeTab === 'all' || m.status === activeTab);
+  const currentMessages = view === 'user' ? messages : koyaMessages;
+  const filteredMessages = currentMessages.filter(m => activeTab === 'all' || m.status === activeTab);
 
   const stats = {
-    total: messages.length,
-    pending: messages.filter(m => m.status === 'pending').length,
-    sent: messages.filter(m => m.status === 'sent').length,
-    cancelled: messages.filter(m => m.status === 'cancelled').length,
+    total: currentMessages.length,
+    pending: currentMessages.filter(m => m.status === 'pending').length,
+    sent: currentMessages.filter(m => m.status === 'sent').length,
+    cancelled: currentMessages.filter(m => m.status === 'cancelled').length,
   };
 
   return (
@@ -78,9 +84,23 @@ export default function App() {
         </div>
 
         <nav className="space-y-2">
-          <button className="w-full flex items-center gap-3 px-4 py-3 bg-indigo-600/10 text-indigo-400 rounded-xl font-medium transition-all">
+          <button 
+            onClick={() => setView('user')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${
+              view === 'user' ? 'bg-indigo-600/10 text-indigo-400' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/5'
+            }`}
+          >
             <LayoutDashboard className="w-5 h-5" />
-            Dashboard
+            User Messages
+          </button>
+          <button 
+            onClick={() => setView('koya')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all ${
+              view === 'koya' ? 'bg-indigo-600/10 text-indigo-400' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/5'
+            }`}
+          >
+            <Bot className="w-5 h-5" />
+            Koya Game
           </button>
           <button className="w-full flex items-center gap-3 px-4 py-3 text-zinc-500 hover:text-zinc-300 hover:bg-white/5 rounded-xl font-medium transition-all">
             <Settings className="w-5 h-5" />
@@ -103,8 +123,14 @@ export default function App() {
       <main className="lg:ml-64 p-4 md:p-8 lg:p-12">
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
           <div>
-            <h2 className="text-3xl font-bold tracking-tight mb-2">Message Dashboard</h2>
-            <p className="text-zinc-500">Monitor and manage all scheduled Discord messages.</p>
+            <h2 className="text-3xl font-bold tracking-tight mb-2">
+              {view === 'user' ? 'User Dashboard' : 'Koya Game Dashboard'}
+            </h2>
+            <p className="text-zinc-500">
+              {view === 'user' 
+                ? 'Monitor and manage all scheduled Discord messages.' 
+                : 'Automate your One Piece adventure with Koya bot.'}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <a 
@@ -168,6 +194,7 @@ export default function App() {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-bottom border-white/5">
+                  <th className="px-6 py-4 text-xs font-semibold text-zinc-500 uppercase tracking-wider">User</th>
                   <th className="px-6 py-4 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Message</th>
                   <th className="px-6 py-4 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Scheduled For</th>
                   <th className="px-6 py-4 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Channel</th>
@@ -205,6 +232,17 @@ export default function App() {
                         key={msg.id} 
                         className="group hover:bg-white/[0.02] transition-colors"
                       >
+                        <td className="px-6 py-5">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-[10px] font-bold text-indigo-400 border border-white/5">
+                              {msg.username?.substring(0, 2).toUpperCase() || '??'}
+                            </div>
+                            <div>
+                              <div className="text-sm font-medium text-zinc-200">{msg.username || 'Unknown'}</div>
+                              <div className="text-[10px] text-zinc-600 font-mono">{msg.userId}</div>
+                            </div>
+                          </div>
+                        </td>
                         <td className="px-6 py-5">
                           <div className="max-w-xs truncate font-medium text-zinc-200" title={msg.message}>
                             {msg.message}

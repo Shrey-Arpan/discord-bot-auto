@@ -6,4 +6,6 @@ export interface ScheduledMessage {
   scheduledTime: string; // ISO 8601
   createdAt: string; // ISO 8601
   status: 'pending' | 'sent' | 'cancelled';
+  category: string;
+  username: string;
 }
