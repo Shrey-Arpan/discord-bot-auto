@@ -3,7 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import fs from "fs/promises";
 import dotenv from "dotenv";
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from "discord.js";
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, InteractionType } from "discord.js";
 import schedule from "node-schedule";
 import { format, isAfter } from "date-fns";
 import cors from "cors";
@@ -76,8 +76,7 @@ const commands = [
       .setDescription("Delay before sending (e.g. 5m, 1h)")),
   new SlashCommandBuilder()
     .setName("reg")
-    .setDescription("Register your Discord token (User Mode)")
-    .addStringOption(opt => opt.setName("token").setDescription("Your Discord Authorization Token").setRequired(true)),
+    .setDescription("Register your Discord token (User Mode)"),
   new SlashCommandBuilder()
     .setName("unreg")
     .setDescription("Unregister your Discord token"),
@@ -207,176 +206,197 @@ client.on("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  if (interaction.isChatInputCommand()) {
+    const { commandName, user, channelId } = interaction;
 
-  const { commandName, user, channelId } = interaction;
+    if (commandName === "schedule") {
+      const message = interaction.options.getString("message")!;
+      const dateStr = interaction.options.getString("date")!;
+      const timeStr = interaction.options.getString("time")!;
+      const targetChannel = interaction.options.getChannel("channel") || interaction.channel;
 
-  if (commandName === "schedule") {
-    const message = interaction.options.getString("message")!;
-    const dateStr = interaction.options.getString("date")!;
-    const timeStr = interaction.options.getString("time")!;
-    const targetChannel = interaction.options.getChannel("channel") || interaction.channel;
+      const scheduledTime = new Date(`${dateStr}T${timeStr}:00`);
+      if (isNaN(scheduledTime.getTime()) || !isAfter(scheduledTime, new Date())) {
+        return interaction.reply({ content: "❌ Invalid date or time. Must be in the future (YYYY-MM-DD HH:MM).", ephemeral: true });
+      }
 
-    const scheduledTime = new Date(`${dateStr}T${timeStr}:00`);
-    if (isNaN(scheduledTime.getTime()) || !isAfter(scheduledTime, new Date())) {
-      return interaction.reply({ content: "❌ Invalid date or time. Must be in the future (YYYY-MM-DD HH:MM).", ephemeral: true });
+      const id = Math.random().toString(36).substring(2, 11);
+      const msgData = {
+        id,
+        userId: user.id,
+        username: user.username,
+        channelId: targetChannel!.id,
+        message,
+        scheduledTime: scheduledTime.toISOString(),
+        createdAt: new Date().toISOString(),
+        status: "pending",
+        category: "user",
+      };
+
+      const db = await readDB();
+      db.scheduled_messages.push(msgData);
+      await writeDB(db);
+      scheduleMessage(msgData);
+
+      await interaction.reply(`✅ Message scheduled for ${format(scheduledTime, "PPPP p")} in <#${targetChannel!.id}>. ID: \`${id}\``);
     }
 
-    const id = Math.random().toString(36).substring(2, 11);
-    const msgData = {
-      id,
-      userId: user.id,
-      username: user.username,
-      channelId: targetChannel!.id,
-      message,
-      scheduledTime: scheduledTime.toISOString(),
-      createdAt: new Date().toISOString(),
-      status: "pending",
-      category: "user",
-    };
+    if (commandName === "remind") {
+      const message = interaction.options.getString("message")!;
+      const delayStr = interaction.options.getString("delay")!;
 
-    const db = await readDB();
-    db.scheduled_messages.push(msgData);
-    await writeDB(db);
-    scheduleMessage(msgData);
+      const match = delayStr.match(/^(\d+)([mhd])$/);
+      if (!match) {
+        return interaction.reply({ content: "❌ Invalid delay format. Use e.g., 10m, 1h, 2d.", ephemeral: true });
+      }
 
-    await interaction.reply(`✅ Message scheduled for ${format(scheduledTime, "PPPP p")} in <#${targetChannel!.id}>. ID: \`${id}\``);
-  }
-
-  if (commandName === "remind") {
-    const message = interaction.options.getString("message")!;
-    const delayStr = interaction.options.getString("delay")!;
-
-    const match = delayStr.match(/^(\d+)([mhd])$/);
-    if (!match) {
-      return interaction.reply({ content: "❌ Invalid delay format. Use e.g., 10m, 1h, 2d.", ephemeral: true });
-    }
-
-    const value = parseInt(match[1]);
-    const unit = match[2];
-    const now = new Date();
-    let scheduledTime = new Date(now);
-
-    if (unit === "m") scheduledTime.setMinutes(now.getMinutes() + value);
-    else if (unit === "h") scheduledTime.setHours(now.getHours() + value);
-    else if (unit === "d") scheduledTime.setDate(now.getDate() + value);
-
-    const id = Math.random().toString(36).substring(2, 11);
-    const msgData = {
-      id,
-      userId: user.id,
-      username: user.username,
-      channelId: channelId!,
-      message,
-      scheduledTime: scheduledTime.toISOString(),
-      createdAt: new Date().toISOString(),
-      status: "pending",
-      category: "user",
-    };
-
-    const db = await readDB();
-    db.scheduled_messages.push(msgData);
-    await writeDB(db);
-    scheduleMessage(msgData);
-
-    await interaction.reply(`✅ Reminder set for ${format(scheduledTime, "PPPP p")}. ID: \`${id}\``);
-  }
-
-  if (commandName === "list") {
-    const db = await readDB();
-    const userMessages = db.scheduled_messages.filter((m: any) => m.userId === user.id && m.status === "pending");
-
-    if (userMessages.length === 0) {
-      return interaction.reply({ content: "You have no pending scheduled messages.", ephemeral: true });
-    }
-
-    const list = userMessages.map((d: any) => {
-      return `\`${d.id}\`: "${d.message}" at ${format(new Date(d.scheduledTime), "Pp")}`;
-    }).join("\n");
-
-    await interaction.reply({ content: `**Your Pending Messages:**\n${list}`, ephemeral: true });
-  }
-
-  if (commandName === "delete") {
-    const id = interaction.options.getString("id")!;
-    const db = await readDB();
-    const index = db.scheduled_messages.findIndex((m: any) => m.id === id && m.userId === user.id);
-
-    if (index === -1) {
-      return interaction.reply({ content: "❌ Message not found or you don't have permission.", ephemeral: true });
-    }
-
-    db.scheduled_messages[index].status = "cancelled";
-    await writeDB(db);
-
-    const job = jobs.get(id);
-    if (job) {
-      job.cancel();
-      jobs.delete(id);
-    }
-
-    await interaction.reply(`✅ Scheduled message \`${id}\` has been cancelled.`);
-  }
-
-  if (commandName === "hi") {
-    const action = interaction.options.getString("action")!;
-    const delayStr = interaction.options.getString("delay") || "0m";
-    
-    const message = `!${action}`; // Koya uses ! prefix for game commands
-    
-    const match = delayStr.match(/^(\d+)([mhd])$/);
-    let scheduledTime = new Date();
-    if (match) {
       const value = parseInt(match[1]);
       const unit = match[2];
-      if (unit === "m") scheduledTime.setMinutes(scheduledTime.getMinutes() + value);
-      else if (unit === "h") scheduledTime.setHours(scheduledTime.getHours() + value);
-      else if (unit === "d") scheduledTime.setDate(scheduledTime.getDate() + value);
+      const now = new Date();
+      let scheduledTime = new Date(now);
+
+      if (unit === "m") scheduledTime.setMinutes(now.getMinutes() + value);
+      else if (unit === "h") scheduledTime.setHours(now.getHours() + value);
+      else if (unit === "d") scheduledTime.setDate(now.getDate() + value);
+
+      const id = Math.random().toString(36).substring(2, 11);
+      const msgData = {
+        id,
+        userId: user.id,
+        username: user.username,
+        channelId: channelId!,
+        message,
+        scheduledTime: scheduledTime.toISOString(),
+        createdAt: new Date().toISOString(),
+        status: "pending",
+        category: "user",
+      };
+
+      const db = await readDB();
+      db.scheduled_messages.push(msgData);
+      await writeDB(db);
+      scheduleMessage(msgData);
+
+      await interaction.reply(`✅ Reminder set for ${format(scheduledTime, "PPPP p")}. ID: \`${id}\``);
     }
 
-    const id = Math.random().toString(36).substring(2, 11);
-    const msgData = {
-      id,
-      userId: user.id,
-      username: user.username,
-      channelId: channelId!,
-      message,
-      scheduledTime: scheduledTime.toISOString(),
-      createdAt: new Date().toISOString(),
-      status: "pending",
-      category: "koya",
-    };
+    if (commandName === "list") {
+      const db = await readDB();
+      const userMessages = db.scheduled_messages.filter((m: any) => m.userId === user.id && m.status === "pending");
 
-    const db = await readDB();
-    db.scheduled_messages.push(msgData);
-    await writeDB(db);
-    scheduleMessage(msgData);
+      if (userMessages.length === 0) {
+        return interaction.reply({ content: "You have no pending scheduled messages.", ephemeral: true });
+      }
 
-    await interaction.reply(`🏴‍☠️ Koya **${action}** scheduled for ${format(scheduledTime, "Pp")}.`);
+      const list = userMessages.map((d: any) => {
+        return `\`${d.id}\`: "${d.message}" at ${format(new Date(d.scheduledTime), "Pp")}`;
+      }).join("\n");
+
+      await interaction.reply({ content: `**Your Pending Messages:**\n${list}`, ephemeral: true });
+    }
+
+    if (commandName === "delete") {
+      const id = interaction.options.getString("id")!;
+      const db = await readDB();
+      const index = db.scheduled_messages.findIndex((m: any) => m.id === id && m.userId === user.id);
+
+      if (index === -1) {
+        return interaction.reply({ content: "❌ Message not found or you don't have permission.", ephemeral: true });
+      }
+
+      db.scheduled_messages[index].status = "cancelled";
+      await writeDB(db);
+
+      const job = jobs.get(id);
+      if (job) {
+        job.cancel();
+        jobs.delete(id);
+      }
+
+      await interaction.reply(`✅ Scheduled message \`${id}\` has been cancelled.`);
+    }
+
+    if (commandName === "hi") {
+      const action = interaction.options.getString("action")!;
+      const delayStr = interaction.options.getString("delay") || "0m";
+      
+      const message = `!${action}`; // Koya uses ! prefix for game commands
+      
+      const match = delayStr.match(/^(\d+)([mhd])$/);
+      let scheduledTime = new Date();
+      if (match) {
+        const value = parseInt(match[1]);
+        const unit = match[2];
+        if (unit === "m") scheduledTime.setMinutes(scheduledTime.getMinutes() + value);
+        else if (unit === "h") scheduledTime.setHours(scheduledTime.getHours() + value);
+        else if (unit === "d") scheduledTime.setDate(scheduledTime.getDate() + value);
+      }
+
+      const id = Math.random().toString(36).substring(2, 11);
+      const msgData = {
+        id,
+        userId: user.id,
+        username: user.username,
+        channelId: channelId!,
+        message,
+        scheduledTime: scheduledTime.toISOString(),
+        createdAt: new Date().toISOString(),
+        status: "pending",
+        category: "koya",
+      };
+
+      const db = await readDB();
+      db.scheduled_messages.push(msgData);
+      await writeDB(db);
+      scheduleMessage(msgData);
+
+      await interaction.reply(`🏴‍☠️ Koya **${action}** scheduled for ${format(scheduledTime, "Pp")}.`);
+    }
+
+    if (commandName === "reg") {
+      const modal = new ModalBuilder()
+        .setCustomId("reg_modal")
+        .setTitle("Register Discord Token");
+
+      const tokenInput = new TextInputBuilder()
+        .setCustomId("token_input")
+        .setLabel("Enter your Discord Authorization Token")
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder("Paste your token here...")
+        .setRequired(true);
+
+      const actionRow = new ActionRowBuilder<TextInputBuilder>().addComponents(tokenInput);
+      modal.addComponents(actionRow);
+
+      await interaction.showModal(modal);
+    }
+
+    if (commandName === "unreg") {
+      const db = await readDB();
+      if (!db.user_tokens[user.id]) {
+        return interaction.reply({ content: "❌ You are not registered.", ephemeral: true });
+      }
+
+      delete db.user_tokens[user.id];
+      await writeDB(db);
+      await interaction.reply({ content: "✅ Token unregistered successfully. Reverting to Bot Mode.", ephemeral: true });
+    }
   }
 
-  if (commandName === "reg") {
-    const token = interaction.options.getString("token")!;
-    const db = await readDB();
-    
-    if (!db.user_tokens[user.id] && Object.keys(db.user_tokens).length >= 5) {
-      return interaction.reply({ content: "❌ Registration limit reached (max 5 users).", ephemeral: true });
+  if (interaction.type === InteractionType.ModalSubmit) {
+    if (interaction.customId === "reg_modal") {
+      const token = interaction.fields.getTextInputValue("token_input");
+      const user = interaction.user;
+      const db = await readDB();
+      
+      if (!db.user_tokens[user.id] && Object.keys(db.user_tokens).length >= 5) {
+        return interaction.reply({ content: "❌ Registration limit reached (max 5 users).", ephemeral: true });
+      }
+
+      db.user_tokens[user.id] = token;
+      await writeDB(db);
+      await interaction.reply({ content: "✅ Token registered successfully! You are now in User Mode.", ephemeral: true });
     }
-
-    db.user_tokens[user.id] = token;
-    await writeDB(db);
-    await interaction.reply({ content: "✅ Token registered successfully! You are now in User Mode.", ephemeral: true });
-  }
-
-  if (commandName === "unreg") {
-    const db = await readDB();
-    if (!db.user_tokens[user.id]) {
-      return interaction.reply({ content: "❌ You are not registered.", ephemeral: true });
-    }
-
-    delete db.user_tokens[user.id];
-    await writeDB(db);
-    await interaction.reply({ content: "✅ Token unregistered successfully. Reverting to Bot Mode.", ephemeral: true });
   }
 });
 
